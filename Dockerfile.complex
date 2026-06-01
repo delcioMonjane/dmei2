@@ -1,0 +1,19 @@
+# A more complex Dockerfile with various smells
+FROM python:latest
+
+WORKDIR /app
+
+# RUN_AS_ROOT smell and CACHE_NOT_CLEANED smell
+RUN apt-get update && apt-get install -y gcc
+
+COPY . .
+
+RUN pip install -r requirements.txt
+
+# Explicitly run as root, another RUN_AS_ROOT smell
+USER root
+RUN chmod +x ./start.sh
+
+EXPOSE 8080
+
+CMD ["./start.sh"]

@@ -1,0 +1,12 @@
+smells:
+  "RUN_AS_ROOT":
+    Security: -10
+  "CACHE_NOT_CLEANED":
+    Performance: -9
+  "LATEST_TAG_USED":
+    Reproducibility: -10
+    Maintainability: -2
+  "PIP_NO_CACHE_DIR":
+    Performance: -8
+  "HADOLINT_DL3002":
+    Maintainability: -2

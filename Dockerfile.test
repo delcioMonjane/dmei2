@@ -1,0 +1,7 @@
+# Dockerfile with known smells for testing
+FROM ubuntu:latest
+
+RUN apt-get update && apt-get install -y curl
+
+# The default user is root, so any RUN command is a "RUN_AS_ROOT" smell.
+RUN echo "Hello from root"
