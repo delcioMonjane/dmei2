@@ -1,0 +1,21 @@
+@startuml
+' Process View - Refactoring Sequence
+
+!theme plain
+actor User
+participant "cli.main" as CLI
+participant "integrations.client" as Client
+
+User -> CLI: 1. poetry run python src/cli/main.py apply ...
+activate CLI
+
+CLI -> Client: 2. repair(input_path, output_path)
+activate Client
+Client -> Client: 3. Spawns 'parfum repair -o ...' subprocess
+Client --> CLI: 4. Returns success status
+deactivate Client
+
+CLI -> User: 5. Prints success message
+deactivate CLI
+
+@enduml

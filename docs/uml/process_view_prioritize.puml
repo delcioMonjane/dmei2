@@ -1,0 +1,34 @@
+@startuml
+' Process View - Prioritization Sequence
+
+!theme plain
+actor User
+participant "cli.main" as CLI
+participant "integrations.client" as Client
+participant "prioritization.engine" as Engine
+participant "persistence.db" as DB
+
+User -> CLI: 1. poetry run python src/cli/main.py prioritize ...
+activate CLI
+
+CLI -> Client: 2. analyze(file_path)
+activate Client
+Client -> Client: 3. Spawns 'parfum analyze' subprocess
+Client -> Client: 4. Parses text output
+Client --> CLI: 5. Returns List[Smell]
+deactivate Client
+
+CLI -> Engine: 6. prioritize_repairs(smells, prefs)
+activate Engine
+Engine -> Engine: 7. Calculates scores
+Engine --> CLI: 8. Returns List[PrioritizedRepair]
+deactivate Engine
+
+CLI -> DB: 9. save_analysis(result)
+activate DB
+deactivate DB
+
+CLI -> User: 10. Prints Rich table report
+deactivate CLI
+
+@enduml

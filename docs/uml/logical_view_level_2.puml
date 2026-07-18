@@ -1,0 +1,27 @@
+@startuml
+' Logical View - Level 2 (Internal Pipeline)
+
+!theme plain
+skinparam componentStyle uml2
+
+component "Parfum Adapter" as Adapter
+component "Domain Mapper" as Mapper
+component "Prioritization Engine" as Engine
+component "Trade-off Analyzer" as Tradeoff
+component "Persistence" as DB
+component "Report Exporter" as Exporter
+
+database "SQLite" as Database
+
+Adapter -> Mapper : 1. Raw Smell Data
+Mapper -> Engine : 2. Enriched Smell Objects
+Mapper -> Tradeoff : 3. Enriched Smell Objects
+Engine -> DB : 4. Prioritized Results
+Tradeoff -> DB : 5. Trade-off Data
+DB -> Exporter : 6. Fetches final results
+Exporter -> (*) : 7. Renders Console/File Report
+
+Engine -> Exporter
+Tradeoff -> Exporter
+
+@enduml

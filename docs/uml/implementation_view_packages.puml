@@ -1,0 +1,39 @@
+@startuml
+' Implementation View - Package Diagram
+
+!theme plain
+skinparam packageStyle rect
+
+package "src" {
+    package "cli" {
+        [main.py]
+    }
+    package "domain" {
+        [models.py]
+    }
+    package "integrations" {
+        [client.py]
+    }
+    package "prioritization" {
+        [engine.py]
+    }
+    package "tradeoffs" {
+        [analyzer.py]
+    }
+    package "persistence" {
+        [db.py]
+    }
+    package "reports" {
+        [exporter.py]
+    }
+}
+
+[main.py] --> [engine.py]
+[main.py] --> [client.py]
+[main.py] --> [exporter.py]
+[engine.py] --> [models.py]
+[client.py] --> [models.py]
+[exporter.py] --> [models.py]
+[db.py] --> [models.py]
+
+@enduml

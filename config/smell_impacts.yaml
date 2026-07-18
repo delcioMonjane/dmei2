@@ -1,12 +1,71 @@
+# Comprehensive Smell-to-Quality-Attribute Impact Mapping
+# This file acts as the knowledge base for the prioritization engine.
+# Scores are on a -10 to +10 scale.
+# Negative scores represent "technical debt" or a negative impact on the attribute.
+# Positive scores represent a benefit, usually in the context of a trade-off.
+
 smells:
-  "RUN_AS_ROOT":
+  # --- Security Smells (High Impact) ---
+  "RUN_AS_ROOT": # Covers DL3002
     Security: -10
-  "CACHE_NOT_CLEANED":
+  "INSECURE_URL": # Covers curlUseHttpsUrl, wgetUseHttpsUrl
+    Security: -9
+  "ADD_INSTEAD_OF_COPY": # Covers DL3020
+    Security: -6
+    Reproducibility: -4
+    Maintainability: 2 # Trade-off: ADD can be seen as more convenient but is risky
+  "UNPREDICTABLE_SUDO": # Covers DL3004
+    Security: -7
+    Reproducibility: -7
+
+  # --- Performance Smells (High Impact) ---
+  "CACHE_NOT_CLEANED": # Covers aptGetInstallThenRemoveAptLists, yumInstallRmVarCacheYum, npmCacheCleanAfterInstall, yarnCacheCleanAfterInstall
     Performance: -9
-  "LATEST_TAG_USED":
-    Reproducibility: -10
-    Maintainability: -2
-  "PIP_NO_CACHE_DIR":
+  "NO_INSTALL_RECOMMENDS_MISSING": # Covers aptGetInstallUseNoRec
+    Performance: -7
+    Security: -3 # Installs extra packages, increasing attack surface
+  "PIP_NO_CACHE_DIR_MISSING": # Covers pipUseNoCacheDir
     Performance: -8
-  "HADOLINT_DL3002":
+  "APK_NO_CACHE_MISSING":
+    Performance: -5 # Slower builds if cache is used
+    Security: 7     # Trade-off: Using --no-cache ensures latest (secure) packages
+  "TEMP_DIR_NOT_REMOVED": # Covers rmRecursiveAfterMktempD
+    Performance: -6
+  "ARCHIVE_NOT_REMOVED": # Covers tarSomethingRmTheSomething
+    Performance: -6
+  "GEM_DOCS_NOT_SKIPPED": # Covers gemUpdateNoDocument
+    Performance: -4
+
+  # --- Reproducibility Smells (High Impact) ---
+  "IMPRECISE_TAG": # Covers latestTag
+    Reproducibility: -10
+    Security: 3         # Trade-off: Floating tags can automatically pull in security patches
+  "APT_UPDATE_SEPARATE": # Covers aptGetUpdatePrecedesInstall
+    Reproducibility: -8 # Can lead to inconsistent package versions if layers are cached differently
+    Performance: -5
+  "MULTIPLE_INSTALLS": # Covers ruleMoreThanOneInstall
+    Reproducibility: -3
+    Performance: -6 # Creates extra layers
+    Maintainability: -4
+
+  # --- Maintainability Smells (Lower Impact) ---
+  "DISCOURAGED_COMMAND": # Covers DL3027 (apt instead of apt-get)
+    Maintainability: -3
+  "GPG_NO_BATCH": # Covers gpgUseBatchFlag
+    Maintainability: -4 # Fails in automated environments
+  "YUM_NO_YES_FLAG": # Covers yumInstallForceYes
+    Maintainability: -4 # Fails in automated environments
+  "APTGET_NO_YES_FLAG": # Covers aptGetInstallUseY
+    Maintainability: -4 # Fails in automated environments
+  "UNNECESSARY_SUDO": # Covers DL3004
+    Maintainability: -5
+    Security: -2
+  "PLATFORM_PINNING": # Covers DL3029
+    Maintainability: -6 # Makes the Dockerfile less portable
+    Reproducibility: 5 # Trade-off: Ensures it only builds for the intended platform
+  "USELESS_LOG_ENTRIES": # Covers DL3046
+    Performance: -1
     Maintainability: -2
+  "GPG_KEYSERVER_BEST_PRACTICE": # Covers gpgUseHaPools
+    Reproducibility: -3
+    Performance: -2

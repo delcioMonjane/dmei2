@@ -1,0 +1,28 @@
+@startuml
+' Deployment View
+
+!theme plain
+
+node "Host Operating System" {
+    node "Python Environment" as PyEnv {
+        artifact "docker-prioritizer" {
+            component [main.py]
+            component [engine.py]
+        }
+    }
+
+    node "Node.js Environment" as NodeEnv {
+        artifact "Parfum Engine" {
+            component [index.js]
+        }
+    }
+
+    database "SQLite Database" as DB {
+        artifact "docker_prioritizer.db"
+    }
+}
+
+PyEnv ..> NodeEnv : Spawns Subprocess
+PyEnv ..> DB : Reads/Writes
+
+@enduml

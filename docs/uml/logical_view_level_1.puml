@@ -1,0 +1,24 @@
+@startuml
+' Logical View - Level 1
+
+!theme plain
+skinparam componentStyle uml2
+skinparam rectangle {
+    roundCorner 25
+}
+
+actor Developer
+
+rectangle "Trade-off Aware Refactoring System" as System {
+    component "CLI Orchestrator" as CLI
+    component "Prioritization Engine" as Engine
+    component "Parfum Integration" as ParfumAdapter
+}
+
+Developer --> CLI : 1. Executes command (e.g., prioritize)
+CLI -> Engine : 2. Invokes prioritization logic
+Engine -> ParfumAdapter : 3. Requests smell analysis
+ParfumAdapter -> CLI : 4. Returns enriched smell data
+CLI --> Developer : 5. Displays prioritized plan
+
+@enduml

@@ -1,12 +1,24 @@
 import sqlite3
 from pathlib import Path
 from typing import List
+import yaml
 from src.domain.models import AnalysisResult, Smell, PrioritizedRepair, TradeOff
 
-DB_FILE = "docker_prioritizer.db"
+def get_db_path() -> Path:
+    """Reads the database path from the settings config."""
+    settings_path = Path(__file__).parent.parent.parent / 'config' / 'settings.yaml'
+    db_path_str = "docker_prioritizer.db" # Default fallback
+    if settings_path.exists():
+        with open(settings_path, 'r') as f:
+            settings = yaml.safe_load(f)
+            db_path_str = settings.get("database_path", db_path_str)
+    return Path(db_path_str)
 
-def init_db(db_path: Path = Path(DB_FILE)):
-    with sqlite3.connect(db_path) as conn:
+DB_FILE = get_db_path()
+
+def init_db():
+    """Initializes the database tables if they don't exist."""
+    with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS analyses (
@@ -43,8 +55,9 @@ def init_db(db_path: Path = Path(DB_FILE)):
         """)
         conn.commit()
 
-def save_analysis(analysis: AnalysisResult, db_path: Path = Path(DB_FILE)):
-    with sqlite3.connect(db_path) as conn:
+def save_analysis(analysis: AnalysisResult):
+    """Saves a complete analysis result to the database."""
+    with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO analyses (id, dockerfile_path) VALUES (?, ?)",
                        (analysis.analysis_id, analysis.dockerfile_path))
@@ -64,14 +77,12 @@ def save_analysis(analysis: AnalysisResult, db_path: Path = Path(DB_FILE)):
                                (repair.repair_id, tradeoff.positive_impact.attribute.value, tradeoff.negative_impact.attribute.value, tradeoff.explanation))
         conn.commit()
 
-def get_analysis(analysis_id: str, db_path: Path = Path(DB_FILE)) -> AnalysisResult:
-    # This is a simplified example. A full implementation would need to reconstruct the entire AnalysisResult object
-    # from the database, which can be complex.
-    with sqlite3.connect(db_path) as conn:
+def get_analysis(analysis_id: str):
+    # This is a simplified stub. A full implementation would need to reconstruct the object.
+    with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT dockerfile_path FROM analyses WHERE id = ?", (analysis_id,))
         row = cursor.fetchone()
         if row:
-            # In a real app, you'd join all tables to rebuild the object
             return {"dockerfile_path": row[0]}
         return None
