@@ -8,10 +8,9 @@ import uuid
 import shutil
 import re
 import argparse
+import statistics
 
 # --- CORRECTED PATH INSERT ---
-# Add the project root directory (/app inside the container) to the Python path.
-# This allows imports like 'from src.integrations...' to work correctly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.integrations.parfum.client import ParfumIntegration
@@ -21,179 +20,188 @@ from src.persistence import db
 
 # --- Configuration ---
 REPOSITORIES_DIR = Path(__file__).parent / 'repositories'
-RESULTS_FILE = Path(__file__).parent / 'evaluation_results.csv'
+SUMMARY_RESULTS_FILE = Path(__file__).parent / 'evaluation_summary.csv'
+SMELL_DETAILS_FILE = Path(__file__).parent / 'smell_details.csv'
 # ---
 
 def check_prerequisites():
     """Checks if Docker and Trivy are installed."""
     if not shutil.which("docker"):
-        print("[bold red]Error: 'docker' command not found. Please install Docker Desktop and ensure it's running.[/bold red]")
-        sys.exit(1)
+        print("[bold red]Error: 'docker' command not found.[/bold red]"); sys.exit(1)
     if not shutil.which("trivy"):
-        print("[bold red]Error: 'trivy' command not found. Please install Trivy.[/bold red]")
-        sys.exit(1)
+        print("[bold red]Error: 'trivy' command not found.[/bold red]"); sys.exit(1)
     print("[green]Docker and Trivy are installed.[/green]")
 
-def get_build_failure_reason(error_message: str) -> str:
-    """Extracts a concise, one-line error from a Docker build log."""
-    patterns = [
-        r"The command '.+' returned a non-zero code: \d+",
-        r"executor failed running .+",
-        r"failed to solve: .+",
-        r"ERROR: .+",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, error_message)
-        if match:
-            return match.group(0).strip().replace(';',',')
-    lines = [line.strip().replace(';',',') for line in error_message.strip().split('\n') if line.strip()]
-    return lines[-1] if lines else "Unknown build error"
+def categorize_failure(error_message: str) -> str:
+    """Parses a raw error string to assign a failure category."""
+    if "parse error" in error_message or "failed to parse" in error_message:
+        return "PARSE_ERROR"
+    if "not found" in error_message or "no such file or directory" in error_message:
+        return "MISSING_CONTEXT"
+    if "connection timed out" in error_message or "Temporary failure resolving" in error_message:
+        return "NETWORK_DEPENDENCY"
+    if "unhandled docker command" in error_message.lower():
+        return "PARFUM_PARSE_ERROR"
+    return "UNKNOWN_BUILD_ERROR"
 
-def get_real_metrics(dockerfile_path: Path) -> dict:
-    """Builds a Docker image, measures its metrics, and then cleans up."""
+def get_real_metrics(dockerfile_path: Path, num_runs: int) -> dict:
+    """Builds a Docker image multiple times, measures metrics, and cleans up."""
     image_tag = f"eval-image:{uuid.uuid4()}"
-    metrics = { "build_status": "SUCCESS", "build_time_s": None, "image_size_mb": None, "vulnerabilities": None }
+    metrics = { "build_status": "SUCCESS", "failure_category": None, "build_times_s": [], "image_size_mb": None, "layer_count": None, "vulnerabilities": None }
 
-    print(f"  Building image '{image_tag}' from context: {dockerfile_path.parent}")
-    try:
-        start_time = time.monotonic()
-        build_context = dockerfile_path.parent
-        subprocess.run(
-            ["docker", "build", "-t", image_tag, "-f", str(dockerfile_path), str(build_context)],
-            check=True, capture_output=True, text=True, encoding='utf-8', errors='replace'
-        )
-        metrics["build_time_s"] = time.monotonic() - start_time
-    except subprocess.CalledProcessError as e:
-        print(f"  [yellow]Build failed for {dockerfile_path.name}. Recording reason.[/yellow]")
-        metrics["build_status"] = get_build_failure_reason(e.stderr)
-        return metrics
+    build_times = []
+    for i in range(num_runs):
+        print(f"    Building image '{image_tag}' (Run {i+1}/{num_runs})...")
+        try:
+            # Prune build cache for a cold build
+            subprocess.run(["docker", "builder", "prune", "-f"], capture_output=True)
+            start_time = time.monotonic()
+            subprocess.run(
+                ["docker", "build", "-t", image_tag, "-f", str(dockerfile_path), str(dockerfile_path.parent)],
+                check=True, capture_output=True, text=True, encoding='utf-8', errors='replace'
+            )
+            build_times.append(time.monotonic() - start_time)
+        except subprocess.CalledProcessError as e:
+            print(f"    [yellow]Build failed. Recording reason.[/yellow]")
+            metrics["build_status"] = "FAILURE"
+            metrics["failure_category"] = categorize_failure(e.stderr)
+            return metrics
+
+    metrics["build_time_s"] = statistics.median(build_times) if build_times else None
 
     try:
-        print("  Getting image size...")
-        size_result = subprocess.run(
-            ["docker", "image", "inspect", image_tag, "--format", "{{.Size}}"],
+        print("    Inspecting image...")
+        inspect_result = subprocess.run(
+            ["docker", "image", "inspect", image_tag],
             check=True, capture_output=True, text=True, encoding='utf-8'
         )
-        metrics["image_size_mb"] = int(size_result.stdout.strip()) / (1024 * 1024)
+        inspect_data = json.loads(inspect_result.stdout)[0]
+        metrics["image_size_mb"] = inspect_data.get("Size", 0) / (1024 * 1024)
+        metrics["layer_count"] = len(inspect_data.get("RootFS", {}).get("Layers", []))
 
-        print("  Scanning for vulnerabilities with Trivy...")
+        print("    Scanning for vulnerabilities with Trivy...")
         trivy_result = subprocess.run(
             ["trivy", "image", "--format", "json", "--severity", "CRITICAL,HIGH", image_tag],
             capture_output=True, text=True, encoding='utf-8'
         )
         if trivy_result.stdout:
             trivy_data = json.loads(trivy_result.stdout)
-            results_list = trivy_data.get("Results") or []
-            metrics["vulnerabilities"] = len(results_list) if results_list else 0
+            metrics["vulnerabilities"] = len(trivy_data.get("Results") or [])
         else:
             metrics["vulnerabilities"] = 0
     finally:
-        print(f"  Cleaning up image '{image_tag}'...")
+        print(f"    Cleaning up image '{image_tag}'...")
         subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
 
     return metrics
 
 def main():
-    """Main evaluation script."""
     parser = argparse.ArgumentParser(description="Run evaluation on a corpus of Dockerfiles.")
-    parser.add_argument(
-        "--percent",
-        type=int,
-        default=100,
-        help="The percentage of the corpus to process (e.g., 10 for 10%%)."
-    )
+    parser.add_argument("--percent", type=int, default=100, help="Percentage of the corpus to process.")
+    parser.add_argument("--offset", type=int, default=0, help="Offset to start processing from.")
+    parser.add_argument("--runs", type=int, default=1, help="Number of build runs for median time calculation.")
     args = parser.parse_args()
 
     check_prerequisites()
     db.init_db()
 
-    all_dockerfiles = list(REPOSITORIES_DIR.glob("**/Dockerfile"))
+    all_dockerfiles = sorted(list(REPOSITORIES_DIR.glob("**/Dockerfile")))
     if not all_dockerfiles:
-        print(f"No Dockerfiles found in {REPOSITORIES_DIR}. Please run the clone script first.")
-        return
+        print(f"No Dockerfiles found in {REPOSITORIES_DIR}."); return
 
-    sample_size = int(len(all_dockerfiles) * (args.percent / 100))
-    dockerfiles_to_process = all_dockerfiles[:sample_size]
+    start_index = args.offset
+    end_index = start_index + int(len(all_dockerfiles) * (args.percent / 100))
+    dockerfiles_to_process = all_dockerfiles[start_index:end_index]
 
-    print(f"Found {len(all_dockerfiles)} total Dockerfiles. Processing {len(dockerfiles_to_process)} ({args.percent}%) of them.")
+    print(f"Found {len(all_dockerfiles)} total Dockerfiles. Processing slice from {start_index} to {end_index} ({len(dockerfiles_to_process)} files).")
 
-    headers = ["repo_name", "dockerfile_path", "build_status_before", "build_status_after"]
-    for qa in QualityAttribute:
-        headers.extend([f"before_{qa.value.lower()}", f"after_{qa.value.lower()}", f"improvement_{qa.value.lower()}"])
-    headers.extend(["build_time_s_before", "build_time_s_after", "build_time_s_improvement"])
-    headers.extend(["image_size_mb_before", "image_size_mb_after", "image_size_mb_improvement"])
-    headers.extend(["vulnerabilities_before", "vulnerabilities_after", "vulnerabilities_improvement"])
+    summary_headers = ["repo_name", "dockerfile_path", "failure_stage", "failure_category"]
+    for qa in QualityAttribute: summary_headers.extend([f"before_{qa.value.lower()}", f"after_{qa.value.lower()}", f"improvement_{qa.value.lower()}"])
+    for metric in ["build_time_s", "image_size_mb", "layer_count", "vulnerabilities"]: summary_headers.extend([f"{metric}_before", f"{metric}_after", f"{metric}_improvement"])
 
-    with open(RESULTS_FILE, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter=';')
-        writer.writerow(headers)
+    smell_headers = ["repo_name", "smell_id", "smell_type"]
+    for qa in QualityAttribute: smell_headers.append(f"predicted_impact_{qa.value.lower()}")
+
+    with open(SUMMARY_RESULTS_FILE, 'w', newline='', encoding='utf-8') as summary_f, \
+         open(SMELL_DETAILS_FILE, 'w', newline='', encoding='utf-8') as smell_f:
+
+        summary_writer = csv.writer(summary_f, delimiter=';')
+        smell_writer = csv.writer(smell_f, delimiter=';')
+        summary_writer.writerow(summary_headers)
+        smell_writer.writerow(smell_headers)
 
         client = ParfumIntegration()
 
         for i, dockerfile in enumerate(dockerfiles_to_process):
             repo_name = dockerfile.parent.name
             print(f"\n--- Processing {i+1}/{len(dockerfiles_to_process)}: {repo_name} ---")
-            repaired_dockerfile = dockerfile.with_suffix(".repaired")
+
+            failure_stage, failure_category = "SUCCESS", None
+            before_metrics, after_metrics = {}, {}
+            before_impacts, after_impacts = {}, {}
 
             try:
                 # --- BEFORE ---
-                print("Analyzing 'before' state...")
+                failure_stage = "before_analysis"
                 before_smells = client.analyze(dockerfile)
                 before_impacts = calculate_total_impact(before_smells)
 
-                analysis_id = str(uuid.uuid4())
-                analysis_result = AnalysisResult(
-                    analysis_id=analysis_id,
-                    dockerfile_path=str(dockerfile.relative_to(REPOSITORIES_DIR)),
-                    detected_smells=before_smells,
-                    prioritized_repairs=[]
-                )
-                db.save_analysis(analysis_result)
-                print(f"  Saved raw analysis to DB with ID: {analysis_id}")
+                # Write per-smell details
+                for smell in before_smells:
+                    smell_row = [repo_name, smell.smell_id, smell.name]
+                    impact_dict = {imp.attribute.value: imp.score for imp in smell.impacts}
+                    for qa in QualityAttribute: smell_row.append(impact_dict.get(qa.value, 0))
+                    smell_writer.writerow(smell_row)
 
-                before_metrics = get_real_metrics(dockerfile)
+                failure_stage = "before_build"
+                before_metrics = get_real_metrics(dockerfile, args.runs)
+                if before_metrics["build_status"] == "FAILURE":
+                    failure_category = before_metrics["failure_category"]
+                    raise Exception("Build failed")
 
-                # --- REPAIR & AFTER ---
-                after_metrics = None
-                if before_metrics["build_status"] == "SUCCESS":
-                    print("Applying automated repairs...")
-                    if client.repair(dockerfile, repaired_dockerfile):
-                        print("Analyzing 'after' state...")
-                        after_smells = client.analyze(repaired_dockerfile)
-                        after_impacts = calculate_total_impact(after_smells)
-                        after_metrics = get_real_metrics(repaired_dockerfile)
-                    else:
-                        print(f"Skipping repair for {dockerfile.name} due to repair failure.")
-                        after_smells, after_impacts = [], {}
-                else:
-                    after_smells, after_impacts = [], {}
+                # --- REPAIR ---
+                failure_stage = "repair_step"
+                repaired_dockerfile = dockerfile.with_suffix(".repaired")
+                if not client.repair(dockerfile, repaired_dockerfile):
+                    failure_category = "PARFUM_REPAIR_FAILED"
+                    raise Exception("Repair step failed")
 
-                # --- SAVE CSV RESULTS ---
-                row = [repo_name, str(dockerfile.relative_to(REPOSITORIES_DIR)), before_metrics["build_status"], after_metrics["build_status"] if after_metrics else 'N/A']
+                # --- AFTER ---
+                failure_stage = "after_analysis"
+                after_smells = client.analyze(repaired_dockerfile)
+                after_impacts = calculate_total_impact(after_smells)
 
-                for qa in QualityAttribute:
-                    before_score = before_impacts.get(qa.value, 0)
-                    after_score = after_impacts.get(qa.value, 0)
-                    row.extend([before_score, after_score, after_score - before_score])
-
-                for metric_key in ["build_time_s", "image_size_mb", "vulnerabilities"]:
-                    before_val = before_metrics.get(metric_key, 'N/A')
-                    after_val = after_metrics.get(metric_key, 'N/A') if after_metrics else 'N/A'
-                    improvement = 'N/A'
-                    if isinstance(before_val, (int, float)) and isinstance(after_val, (int, float)):
-                        improvement = after_val - before_val
-                    row.extend([before_val, after_val, improvement])
-
-                writer.writerow(row)
-                print(f"[bold green]Results for {repo_name} saved.[/bold green]")
+                failure_stage = "after_build"
+                after_metrics = get_real_metrics(repaired_dockerfile)
+                if after_metrics["build_status"] == "FAILURE":
+                    # If 'before' succeeded and 'after' failed, it's a regression
+                    failure_category = "SYNTAX_REGRESSION" if after_metrics["failure_category"] == "PARSE_ERROR" else after_metrics["failure_category"]
+                    raise Exception("Build failed after repair")
 
             except Exception as e:
-                print(f"[bold red]An unexpected error occurred processing {repo_name}: {e}[/bold red]")
-            finally:
-                if repaired_dockerfile.exists():
-                    repaired_dockerfile.unlink()
+                print(f"  [red]Pipeline failed at stage '{failure_stage}': {e}[/red]")
 
-    print(f"\nEvaluation complete. Results saved to {RESULTS_FILE}.")
+            # --- SAVE SUMMARY RESULTS ---
+            row = [repo_name, str(dockerfile.relative_to(REPOSITORIES_DIR)), failure_stage, failure_category]
+            for qa in QualityAttribute:
+                b_score, a_score = before_impacts.get(qa.value, 0), after_impacts.get(qa.value, 0)
+                row.extend([b_score, a_score, a_score - b_score])
+
+            for metric in ["build_time_s", "image_size_mb", "layer_count", "vulnerabilities"]:
+                b_val = before_metrics.get(metric)
+                a_val = after_metrics.get(metric)
+                improvement = None
+                if isinstance(b_val, (int, float)) and isinstance(a_val, (int, float)):
+                    improvement = a_val - b_val
+                row.extend([b_val or 'N/A', a_val or 'N/A', improvement if improvement is not None else 'N/A'])
+
+            summary_writer.writerow(row)
+            print(f"[bold green]Summary results for {repo_name} saved.[/bold green]")
+
+            if 'repaired_dockerfile' in locals() and repaired_dockerfile.exists():
+                repaired_dockerfile.unlink()
+
+    print(f"\nEvaluation complete.")
 
 if __name__ == "__main__":
     main()
