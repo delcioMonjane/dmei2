@@ -1,0 +1,55 @@
+# A fully self-contained Dockerfile for the development and evaluation environment
+FROM python:3.12-slim
+
+# 1. Install System Dependencies
+# We need git to clone the submodules.
+# We need nodejs and npm for parfum.
+# We need curl and build-essential for installing poetry and other packages.
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    nodejs \
+    npm \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Install Poetry
+ENV POETRY_HOME="/opt/poetry"
+ENV PATH="$POETRY_HOME/bin:$PATH"
+RUN curl -sSL https://install.python-poetry.org | python3 -
+
+# 3. Install Trivy (globally inside the container)
+# We install this early as it's a separate tool.
+RUN apt-get update && apt-get install -y --no-install-recommends wget apt-transport-https \
+    && wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add - \
+    && echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee -a /etc/apt/sources.list.d/trivy.list \
+    && apt-get update \
+    && apt-get install -y trivy \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. Install Python Dependencies
+# We copy only the dependency files first to leverage Docker's layer caching.
+WORKDIR /app
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --no-root
+
+# 5. Copy the entire project, including the .gitmodules file
+COPY . .
+
+# 6. Initialize and clone all submodules INSIDE the image
+# This is the key step to bundle the evaluation repositories.
+RUN git submodule init && git submodule update
+
+# 7. Install Parfum
+# We use the globally installed npm from the base image.
+RUN npm install -g @tdurieux/docker-parfum
+
+# 8. Final Configuration
+# Set the default executable path for parfum inside the container.
+RUN sed -i 's|parfum_executable: .*|parfum_executable: "docker-parfum"|' config/settings.yaml
+
+# Set the entrypoint to be the poetry environment
+ENTRYPOINT ["poetry", "run"]
+# Set the default command to run the full evaluation
+CMD ["python3", "evaluation/run_evaluation.py"]
