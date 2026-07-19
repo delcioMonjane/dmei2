@@ -12,35 +12,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates
 
-# 2. Install Poetry
+# 2. Install the Docker CLI (Client)
+# This allows the container to use the host's Docker engine via the mounted socket.
+RUN install -m 0755 -d /etc/apt/keyrings
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+RUN chmod a+r /etc/apt/keyrings/docker.asc
+RUN echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
+RUN apt-get update && apt-get install -y docker-ce-cli
+
+# 3. Install Poetry
 ENV POETRY_HOME="/opt/poetry"
 ENV PATH="$POETRY_HOME/bin:$PATH"
 RUN curl -sSL https://install.python-poetry.org | python3 -
 
-# 3. Install Trivy (using the modern, correct method)
+# 4. Install Trivy
 RUN wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/trivy.list > /dev/null \
     && apt-get update \
-    && apt-get install -y trivy \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y trivy
 
-# 4. Install Python Dependencies
+# 5. Install Python Dependencies
 WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 RUN poetry install --no-root
 
-# 5. Copy the entire project, including the .gitmodules file
+# 6. Copy the entire project, including the .gitmodules file
 COPY . .
 
-# 6. Initialize and clone all submodules INSIDE the image
+# 7. Initialize and clone all submodules INSIDE the image
 RUN git submodule init && git submodule update
 
-# 7. Install Parfum
+# 8. Install Parfum
 RUN npm install -g @tdurieux/docker-parfum
 
-# 8. Final Configuration
+# 9. Final Configuration
 RUN sed -i 's|parfum_executable: .*|parfum_executable: "docker-parfum"|' config/settings.yaml
 
 ENTRYPOINT ["poetry", "run"]

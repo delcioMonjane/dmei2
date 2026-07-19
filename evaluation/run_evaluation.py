@@ -9,8 +9,10 @@ import shutil
 import re
 import argparse
 
-# Ensure the main src directory is in the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+# --- CORRECTED PATH INSERT ---
+# Add the project root directory (/app inside the container) to the Python path.
+# This allows imports like 'from src.integrations...' to work correctly.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.integrations.parfum.client import ParfumIntegration
 from src.cli.main import calculate_total_impact
@@ -110,7 +112,6 @@ def main():
         print(f"No Dockerfiles found in {REPOSITORIES_DIR}. Please run the clone script first.")
         return
 
-    # Calculate the sample size based on the percentage
     sample_size = int(len(all_dockerfiles) * (args.percent / 100))
     dockerfiles_to_process = all_dockerfiles[:sample_size]
 
