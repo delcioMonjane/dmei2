@@ -15,8 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.integrations.parfum.client import ParfumIntegration
 from src.cli.main import calculate_total_impact
-from src.domain.models import QualityAttribute, AnalysisResult
-from src.persistence import db
+from src.domain.models import QualityAttribute
 
 # --- Configuration ---
 REPOSITORIES_DIR = Path(__file__).parent / 'repositories'
@@ -34,7 +33,7 @@ def check_prerequisites():
 
 def categorize_failure(error_message: str) -> str:
     """Parses a raw error string to assign a failure category."""
-    if "parse error" in error_message or "failed to parse" in error_message:
+    if "parse error" in error_message or "failed to solve" in error_message:
         return "PARSE_ERROR"
     if "not found" in error_message or "no such file or directory" in error_message:
         return "MISSING_CONTEXT"
@@ -53,7 +52,6 @@ def get_real_metrics(dockerfile_path: Path, num_runs: int) -> dict:
     for i in range(num_runs):
         print(f"    Building image '{image_tag}' (Run {i+1}/{num_runs})...")
         try:
-            # Prune build cache for a cold build
             subprocess.run(["docker", "builder", "prune", "-f"], capture_output=True)
             start_time = time.monotonic()
             subprocess.run(
@@ -103,7 +101,6 @@ def main():
     args = parser.parse_args()
 
     check_prerequisites()
-    db.init_db()
 
     all_dockerfiles = sorted(list(REPOSITORIES_DIR.glob("**/Dockerfile")))
     if not all_dockerfiles:
@@ -115,7 +112,7 @@ def main():
 
     print(f"Found {len(all_dockerfiles)} total Dockerfiles. Processing slice from {start_index} to {end_index} ({len(dockerfiles_to_process)} files).")
 
-    summary_headers = ["repo_name", "dockerfile_path", "failure_stage", "failure_category"]
+    summary_headers = ["repo_name", "dockerfile_path", "failure_stage", "failure_category", "smell_count_before"]
     for qa in QualityAttribute: summary_headers.extend([f"before_{qa.value.lower()}", f"after_{qa.value.lower()}", f"improvement_{qa.value.lower()}"])
     for metric in ["build_time_s", "image_size_mb", "layer_count", "vulnerabilities"]: summary_headers.extend([f"{metric}_before", f"{metric}_after", f"{metric}_improvement"])
 
@@ -139,50 +136,55 @@ def main():
             failure_stage, failure_category = "SUCCESS", None
             before_metrics, after_metrics = {}, {}
             before_impacts, after_impacts = {}, {}
+            detected_smells = []
+            repaired_dockerfile = None
 
             try:
-                # --- BEFORE ---
-                failure_stage = "before_analysis"
-                before_smells = client.analyze(dockerfile)
-                before_impacts = calculate_total_impact(before_smells)
+                # --- REPAIR and GET SMELLS ---
+                failure_stage = "repair_step"
+                repaired_dockerfile = dockerfile.with_suffix(".repaired")
+                repair_success, detected_smells = client.repair_and_get_smells(dockerfile, repaired_dockerfile)
 
-                # Write per-smell details
-                for smell in before_smells:
+                if not repair_success:
+                    failure_category = "PARFUM_REPAIR_FAILED"
+                    raise Exception("Parfum repair command failed")
+
+                # Write per-smell details immediately
+                for smell in detected_smells:
                     smell_row = [repo_name, smell.smell_id, smell.name]
                     impact_dict = {imp.attribute.value: imp.score for imp in smell.impacts}
                     for qa in QualityAttribute: smell_row.append(impact_dict.get(qa.value, 0))
                     smell_writer.writerow(smell_row)
 
+                before_impacts = calculate_total_impact(detected_smells)
+
+                # --- BEFORE BUILD ---
                 failure_stage = "before_build"
                 before_metrics = get_real_metrics(dockerfile, args.runs)
                 if before_metrics["build_status"] == "FAILURE":
                     failure_category = before_metrics["failure_category"]
-                    raise Exception("Build failed")
+                    raise Exception("Build failed before repair")
 
-                # --- REPAIR ---
-                failure_stage = "repair_step"
-                repaired_dockerfile = dockerfile.with_suffix(".repaired")
-                if not client.repair(dockerfile, repaired_dockerfile):
-                    failure_category = "PARFUM_REPAIR_FAILED"
-                    raise Exception("Repair step failed")
-
-                # --- AFTER ---
-                failure_stage = "after_analysis"
-                after_smells = client.analyze(repaired_dockerfile)
-                after_impacts = calculate_total_impact(after_smells)
+                # --- AFTER BUILD ---
+                # Clean the repaired file to prevent file format issues
+                content = repaired_dockerfile.read_text(encoding='utf-8')
+                repaired_dockerfile.write_text(content.strip() + '\n', encoding='utf-8')
 
                 failure_stage = "after_build"
-                after_metrics = get_real_metrics(repaired_dockerfile)
+                after_metrics = get_real_metrics(repaired_dockerfile, args.runs)
                 if after_metrics["build_status"] == "FAILURE":
-                    # If 'before' succeeded and 'after' failed, it's a regression
                     failure_category = "SYNTAX_REGRESSION" if after_metrics["failure_category"] == "PARSE_ERROR" else after_metrics["failure_category"]
                     raise Exception("Build failed after repair")
+
+                # Get 'after' smells to calculate improvement
+                after_smells = client.analyze(repaired_dockerfile)
+                after_impacts = calculate_total_impact(after_smells)
 
             except Exception as e:
                 print(f"  [red]Pipeline failed at stage '{failure_stage}': {e}[/red]")
 
             # --- SAVE SUMMARY RESULTS ---
-            row = [repo_name, str(dockerfile.relative_to(REPOSITORIES_DIR)), failure_stage, failure_category]
+            row = [repo_name, str(dockerfile.relative_to(REPOSITORIES_DIR)), failure_stage, failure_category, len(detected_smells)]
             for qa in QualityAttribute:
                 b_score, a_score = before_impacts.get(qa.value, 0), after_impacts.get(qa.value, 0)
                 row.extend([b_score, a_score, a_score - b_score])
@@ -198,7 +200,7 @@ def main():
             summary_writer.writerow(row)
             print(f"[bold green]Summary results for {repo_name} saved.[/bold green]")
 
-            if 'repaired_dockerfile' in locals() and repaired_dockerfile.exists():
+            if repaired_dockerfile and repaired_dockerfile.exists():
                 repaired_dockerfile.unlink()
 
     print(f"\nEvaluation complete.")
