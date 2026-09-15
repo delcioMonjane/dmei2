@@ -6,12 +6,13 @@ from src.domain.models import AnalysisResult, Smell, PrioritizedRepair, TradeOff
 
 def get_db_path() -> Path:
     """Reads the database path from the settings config."""
-    settings_path = Path(__file__).parent.parent.parent / 'config' / 'settings.yaml'
-    db_path_str = "docker_prioritizer.db" # Default fallback
-    if settings_path.exists():
-        with open(settings_path, 'r') as f:
-            settings = yaml.safe_load(f)
-            db_path_str = settings.get("database_path", db_path_str)
+    config_dir = Path(__file__).parent.parent.parent / 'config'
+    db_path_str = "docker_prioritizer.db"  # Default fallback
+    for settings_path in (config_dir / 'settings.yaml', config_dir / 'settings.local.yaml'):
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = yaml.safe_load(f) or {}
+                db_path_str = settings.get("database_path", db_path_str)
     return Path(db_path_str)
 
 DB_FILE = get_db_path()

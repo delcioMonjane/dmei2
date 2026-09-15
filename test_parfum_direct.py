@@ -1,9 +1,11 @@
 import subprocess
 import sys
 
+from src.integrations.parfum.client import get_parfum_executable_path
+
 def test_parfum():
     # Run the repair command to see its options
-    command = ["node", "C:/Users/delci/Documents/ISEP/MEI/2oAno/DMEI/parfum/docker-parfum/build/cli/index.js", "repair", "--help"]
+    command = get_parfum_executable_path() + ["repair", "--help"]
     print(f"Running command: {' '.join(command)}")
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=False)

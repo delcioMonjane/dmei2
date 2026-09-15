@@ -8,22 +8,32 @@ import yaml
 
 from src.domain.models import QualityAttribute, QualityImpact, RepairAction, Smell
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+CONFIG_DIR = PROJECT_ROOT / "config"
+
 
 def get_parfum_executable_path() -> List[str]:
-    """Reads the path from the settings config and returns it as a list."""
-    settings_path = Path("config/settings.yaml")
-    if not settings_path.exists():
-        return ["docker-parfum"]  # Default to global install
+    """Reads the path from the settings config and returns it as a list.
 
-    with open(settings_path, "r") as f:
-        settings = yaml.safe_load(f)
-        executable = settings.get("parfum_executable", "docker-parfum")
-        return executable.split()
+    config/settings.yaml holds the portable default; config/settings.local.yaml
+    (gitignored) can override it with a machine-specific path, since
+    docker-parfum is typically a locally built Node project rather than a
+    globally installed binary.
+    """
+    executable = "docker-parfum"  # Default to a global install on PATH
+    for settings_path in (CONFIG_DIR / "settings.yaml", CONFIG_DIR / "settings.local.yaml"):
+        if settings_path.exists():
+            with open(settings_path, "r") as f:
+                settings = yaml.safe_load(f) or {}
+                executable = settings.get("parfum_executable", executable)
+    return executable.split()
 
 
 class ParfumIntegration:
-    def __init__(self, smell_impact_path: Path = Path("config/smell_impacts.yaml")):
+    def __init__(self, smell_impact_path: Path = None):
         self.parfum_command = get_parfum_executable_path()
+        if smell_impact_path is None:
+            smell_impact_path = CONFIG_DIR / "smell_impacts.yaml"
         with open(smell_impact_path, "r") as f:
             self.smell_impacts = yaml.safe_load(f)["smells"]
 

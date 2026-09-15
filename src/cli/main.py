@@ -116,16 +116,14 @@ def apply_command(args):
         return
 
     file_path = Path(args[0])
-    output_path = Path(args[1]) if len(args) > 1 else None
+    output_path = Path(args[1]) if len(args) > 1 else file_path
 
     client = ParfumIntegration()
     print(f"[bold]Applying automatic repairs to {file_path}...[/bold]")
-    success = client.repair(file_path, output_path)
+    success, _ = client.repair_and_get_smells(file_path, output_path)
 
-    if success and output_path:
+    if success:
         print(f"[bold green]Repaired Dockerfile saved to {output_path}[/bold green]")
-    elif success:
-         print(f"[bold green]Repairs applied to {file_path}[/bold green]")
 
 if __name__ == "__main__":
     args = sys.argv[1:]

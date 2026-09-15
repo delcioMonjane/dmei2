@@ -19,6 +19,9 @@ poetry.lock
 *.db
 *.db-journal
 
+# Local machine-specific overrides (e.g. local docker-parfum path)
+config/settings.local.yaml
+
 # Evaluation Data - DO NOT COMMIT CLONED REPOSITORIES
 # We are now using submodules, so we no longer ignore the repositories folder.
 # /evaluation/repositories/
