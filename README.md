@@ -1,383 +1,210 @@
-# A Trade-off-Aware Approach for Prioritized Refactoring of Dockerfiles
+ # Docker Prioritizer
 
-This document outlines the complete software architecture and implementation plan for a Python-based CLI tool that serves as a decision-support system for Dockerfile refactoring. It relies on [Parfum](https://github.com/tdurieux/docker-parfum) for smell detection and repair extraction, while contributing a novel trade-off-aware prioritization engine.
+A trade-off-aware command-line tool for **prioritized refactoring of Dockerfiles**.
 
----
+Linters like [Hadolint](https://github.com/hadolint/hadolint) and repair tools like
+[Parfum](https://github.com/tdurieux/docker-parfum) can detect Dockerfile smells and even fix
+them automatically, but they treat every smell as equally important. In practice, fixing one
+issue can improve one quality attribute while quietly harming another — for example, pinning a
+base image version improves **reproducibility** but can reduce **maintainability** by requiring
+manual updates.
 
-## 1. System Architecture
+Docker Prioritizer sits on top of Parfum's detection engine and adds the missing piece: a
+**prioritization and trade-off model** that ranks proposed repairs according to their impact on
+four quality attributes — Security, Performance, Maintainability and Reproducibility — and the
+developer's own preferences, and it explicitly surfaces the trade-offs behind each
+recommendation. This project is the prototype implementation built for the MSc dissertation
+*"A Trade-off-Aware Approach for Prioritized Refactoring of Dockerfiles"*.
 
-The architecture follows a layered design to ensure a clean separation of concerns, built specifically for a CLI execution context.
+## Features
+
+- **Smell detection** via [Parfum](https://github.com/tdurieux/docker-parfum), used as an
+  external detection/repair engine.
+- **Trade-off-aware prioritization** using a configurable Weighted Sum Model over four quality
+  attributes.
+- **Trade-off explanations** — every recommendation states which attributes it improves and
+  which it may harm.
+- **Automated repair** via Parfum's repair engine.
+- **Before/after comparison** of the quality-attribute profile of two Dockerfiles.
+- **Persisted analysis history** in a local SQLite database, re-exportable as JSON, CSV or
+  Markdown.
+
+## How it works
 
 ```text
 +-------------------------------------------------------------+
-|                        CLI Layer                            |
-|  (Typer, Rich: Input handling, Configuration, Formatting)   |
+|                        CLI Layer (Typer, Rich)               |
 +-------------------------------------------------------------+
                |                              |
 +--------------------------+    +-----------------------------+
 |    Reporting Layer       |    |     Persistence Layer       |
-| (JSON, CSV, MD, Console) |    | (SQLite: Store analyses)    |
+| (JSON, CSV, MD, Console) |    | (SQLite: stores analyses)   |
 +--------------------------+    +-----------------------------+
                |                              |
 +-------------------------------------------------------------+
 |                    Prioritization Layer                     |
-|  (Ranks repairs, Applies dev preferences, Computes scores)  |
+|  (Ranks repairs, applies developer preferences, WSM scores) |
 +-------------------------------------------------------------+
                |                              |
 +--------------------------+    +-----------------------------+
-|      Analysis Layer      |    | Trade-off Analysis Layer    |
-| (Smell processing, QA    |    | (Detect conflicting QA      |
-|  mapping, impact calc)   |    |  attributes, explanations)  |
+|      Domain Model        |    | Trade-off Analysis Layer    |
+| (Smells, QA impacts)     |    | (Detects conflicting QA     |
+|                          |    |  impacts, explanations)     |
 +--------------------------+    +-----------------------------+
                |
 +-------------------------------------------------------------+
 |                  Parfum Integration Layer                   |
-| (Subprocess execution, Output parsing, Error handling)      |
+| (Subprocess execution, output parsing, error handling)      |
 +-------------------------------------------------------------+
 ```
 
-### Layer Responsibilities:
-*   **CLI Layer:** Uses `Typer` to define CLI commands. Parses flags, loads `PyYAML` configs, and uses `Rich` to render terminal outputs.
-*   **Parfum Integration Layer:** Executes the local Parfum installation via Python's `subprocess`. Captures its analysis and proposed repairs, standardizing the payload.
-*   **Analysis Layer:** Maps the detected smells to their corresponding Quality Attribute (QA) impacts (Security, Performance, Maintainability, Reproducibility).
-*   **Prioritization Layer:** Core research engine. Ingests developer preferences (weights), calculates a global priority score for each repair action using a Weighted Sum Model.
-*   **Trade-off Analysis Layer:** Detects instances where a repair positively impacts one QA but negatively impacts another, formatting an explanation.
-*   **Persistence Layer:** Uses `SQLite` and `sqlite3` to persist historic analyses, making it possible to query trends over time.
-*   **Reporting Layer:** Uses `Pandas` internally to format the prioritization results and export them as JSON, CSV, or Markdown.
+Each detected smell carries a set of pre-calibrated impact scores on a **-10 (harmful) to +10
+(beneficial)** scale per quality attribute, defined in [`config/smell_impacts.yaml`](config/smell_impacts.yaml).
+The prioritization engine combines those scores with developer-defined weights into a single
+priority score per repair; the trade-off analyzer flags any smell whose impacts point in
+opposite directions across attributes.
 
----
+## Prerequisites
 
-## 2. Domain Model
+- **Python 3.8+**
+- **[Poetry](https://python-poetry.org/)** for dependency management
+- **Node.js and npm** (required by Parfum)
+- **[Parfum](https://github.com/tdurieux/docker-parfum)**, installed globally:
 
-The domain model represents the core entities using `Pydantic` for strict validation.
+  ```bash
+  npm install -g @tdurieux/docker-parfum
+  ```
 
-```python
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
-from enum import Enum
+  Verify it's on your `PATH`:
 
-class QualityAttribute(str, Enum):
-    SECURITY = "Security"
-    PERFORMANCE = "Performance"
-    MAINTAINABILITY = "Maintainability"
-    REPRODUCIBILITY = "Reproducibility"
+  ```bash
+  docker-parfum --help
+  ```
 
-class DeveloperPreferences(BaseModel):
-    weights: Dict[QualityAttribute, float] = Field(
-        default_factory=lambda: {qa: 1.0 for qa in QualityAttribute}
-    )
+## Installation
 
-class QualityImpact(BaseModel):
-    attribute: QualityAttribute
-    score: float  # -10.0 to 10.0
-
-class TradeOff(BaseModel):
-    positive_impact: QualityImpact
-    negative_impact: QualityImpact
-    explanation: str
-
-class RepairAction(BaseModel):
-    repair_id: str
-    description: str
-    diff_patch: str
-
-class Smell(BaseModel):
-    smell_id: str
-    name: str
-    line_number: int
-    impacts: List[QualityImpact]
-    available_repairs: List[RepairAction]
-
-class PrioritizedRepair(BaseModel):
-    repair: RepairAction
-    smell: Smell
-    final_score: float
-    trade_offs: List[TradeOff]
-
-class AnalysisResult(BaseModel):
-    analysis_id: str
-    dockerfile_path: str
-    detected_smells: List[Smell]
-    prioritized_repairs: List[PrioritizedRepair]
+```bash
+git clone <this-repository-url>
+cd dmei2
+poetry install
 ```
 
----
+`poetry install` registers the `docker-prioritizer` command inside the Poetry-managed
+virtual environment. Run commands either via `poetry run docker-prioritizer ...`, or activate
+the environment first (`poetry shell`) and call `docker-prioritizer` directly.
 
-## 3. CLI Design
+Verify the install:
 
-The application will be accessible via the `docker-prioritizer` CLI.
-
-### `analyze`
-*   **Purpose:** Runs Parfum, detects smells, and outputs the raw analysis.
-*   **Parameters:** `[FILE_PATH]`
-*   **Output:** Rich console table of smells.
-*   **Example:** `docker-prioritizer analyze Dockerfile`
-
-### `prioritize`
-*   **Purpose:** Takes a Dockerfile (and optionally developer weights) and returns ranked repairs.
-*   **Parameters:** `[FILE_PATH] --config weights.yaml`
-*   **Output:** Ranked list of repairs with scores and trade-offs.
-*   **Example:** `docker-prioritizer prioritize Dockerfile --config prod-weights.yaml`
-
-### `apply`
-*   **Purpose:** Applies a specific repair patch to the Dockerfile.
-*   **Parameters:** `[FILE_PATH] --repair-id ID`
-*   **Output:** Success message.
-*   **Example:** `docker-prioritizer apply Dockerfile --repair-id R-123`
-
-### `report`
-*   **Purpose:** Fetches a previous analysis from SQLite and exports it.
-*   **Parameters:** `[ANALYSIS_ID] --format [json|csv|md]`
-*   **Output:** File creation.
-*   **Example:** `docker-prioritizer report 5f3a2b --format md`
-
-### `compare`
-*   **Purpose:** Compares the QA profile of a Dockerfile before and after applying a repair.
-*   **Parameters:** `[BEFORE_FILE] [AFTER_FILE]`
-*   **Output:** Delta of Quality Attributes.
-*   **Example:** `docker-prioritizer compare Dockerfile Dockerfile.fixed`
-
----
-
-## 4. Parfum Integration
-
-Python interacts with Parfum by executing it as a subprocess. 
-
-```python
-import subprocess
-import json
-from pathlib import Path
-from typing import Dict, Any
-
-class ParfumIntegration:
-    def __init__(self, parfum_executable: str = "parfum"):
-        self.parfum_executable = parfum_executable
-
-    def analyze(self, dockerfile_path: Path) -> Dict[str, Any]:
-        """Executes Parfum and captures the output JSON."""
-        try:
-            result = subprocess.run(
-                [self.parfum_executable, "analyze", "--format", "json", str(dockerfile_path)],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return json.loads(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print(f"Parfum execution failed. Stderr: {e.stderr}")
-            raise
-        except json.JSONDecodeError:
-            print("Failed to parse Parfum output.")
-            raise
+```bash
+poetry run docker-prioritizer --help
 ```
 
----
+### Configuration
 
-## 5. Quality Attribute Model
-
-Smell impacts are decoupled into a configuration file (`smell_impacts.yaml`), loaded during execution.
+Runtime configuration lives in [`config/settings.yaml`](config/settings.yaml):
 
 ```yaml
-# smell_impacts.yaml
-smells:
-  "RUN_AS_ROOT":
-    Security: 10
-    Performance: 0
-    Maintainability: 0
-    Reproducibility: 0
-  "CACHE_NOT_CLEANED":
-    Security: 0
-    Performance: 9
-    Maintainability: 0
-    Reproducibility: 0
-  "MISSING_VERSION_PINNING":
-    Security: 4
-    Performance: 0
-    Maintainability: 3
-    Reproducibility: 9
-  "LATEST_TAG_USED":
-    Security: 3
-    Performance: 0
-    Maintainability: -2 # Fixing this forces constant updates
-    Reproducibility: 10
+parfum_executable: "docker-parfum"
+database_path: "docker_prioritizer.db"
 ```
 
----
+Both values can be overridden without editing the file, using environment variables — useful
+for CI, containers, or a local Parfum build that isn't on `PATH`:
 
-## 6. Prioritization Algorithm
+| Environment variable | Overrides                | Example |
+|-----------------------|---------------------------|---------|
+| `PARFUM_EXECUTABLE`   | `parfum_executable`        | `PARFUM_EXECUTABLE="node /path/to/docker-parfum/build/cli/index.js"` |
+| `DATABASE_PATH`       | `database_path`             | `DATABASE_PATH="/tmp/docker-prioritizer.db"` |
 
-### Mathematical Formulation
-The algorithm utilizes a Weighted Sum Model (WSM).
-For a given repair $r$ associated with a smell $S$:
-$$Score(r) = \sum_{q \in QA} Weight(q) \times Impact(S, q)$$
+Smell-to-quality-attribute impact scores are defined in
+[`config/smell_impacts.yaml`](config/smell_impacts.yaml) and can be recalibrated without
+touching code.
 
-### Complexity Analysis
-*   $N$: Number of smells detected
-*   $M$: Number of possible repairs per smell (usually 1-3)
-*   $Q$: Number of Quality Attributes (constant, 4)
-*   **Time Complexity:** $O(N \times M \times Q)$ which simplifies to $O(N)$. Extremely efficient.
+## Usage
 
-### Python Implementation
-```python
-def calculate_score(smell: Smell, prefs: DeveloperPreferences) -> float:
-    score = 0.0
-    for impact in smell.impacts:
-        weight = prefs.weights.get(impact.attribute, 1.0)
-        score += weight * impact.score
-    return score
+```bash
+# Detect smells in a Dockerfile
+docker-prioritizer analyze Dockerfile
 
-def prioritize_repairs(smells: List[Smell], prefs: DeveloperPreferences) -> List[PrioritizedRepair]:
-    prioritized = []
-    for smell in smells:
-        for repair in smell.available_repairs:
-            score = calculate_score(smell, prefs)
-            trade_offs = detect_trade_offs(smell)
-            prioritized.append(PrioritizedRepair(
-                repair=repair, smell=smell, final_score=score, trade_offs=trade_offs
-            ))
-    
-    # Sort descending by score
-    return sorted(prioritized, key=lambda x: x.final_score, reverse=True)
+# Detect smells and rank their repairs by priority (default: equal weights)
+docker-prioritizer prioritize Dockerfile
+
+# Rank using custom developer preferences (see security-first-weights.yaml for the format)
+docker-prioritizer prioritize Dockerfile --config security-first-weights.yaml
+
+# Apply Parfum's automated repairs
+docker-prioritizer apply Dockerfile --output Dockerfile.repaired
+
+# Compare the quality-attribute profile of two Dockerfiles
+docker-prioritizer compare Dockerfile Dockerfile.repaired
+
+# Re-export a previously stored analysis (the ID is printed by `prioritize`)
+docker-prioritizer report <ANALYSIS_ID> --format md --output report.md
 ```
 
----
-
-## 7. Trade-off Analysis
-
-If fixing a smell improves one attribute but degrades another, it's a trade-off.
-
-### Detection Method
-```python
-def detect_trade_offs(smell: Smell) -> List[TradeOff]:
-    trade_offs = []
-    positives = [imp for imp in smell.impacts if imp.score > 0]
-    negatives = [imp for imp in smell.impacts if imp.score < 0]
-    
-    for pos in positives:
-        for neg in negatives:
-            trade_offs.append(TradeOff(
-                positive_impact=pos,
-                negative_impact=neg,
-                explanation=f"Improves {pos.attribute.value} but reduces {neg.attribute.value}."
-            ))
-    return trade_offs
-```
-
----
-
-## 8. Persistence
-
-SQLite Database designed to store historical runs.
-
-```sql
-CREATE TABLE analyses (
-    id TEXT PRIMARY KEY,
-    dockerfile_path TEXT NOT NULL,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE smells (
-    id TEXT PRIMARY KEY,
-    analysis_id TEXT REFERENCES analyses(id),
-    name TEXT NOT NULL,
-    line_number INTEGER
-);
-
-CREATE TABLE repairs (
-    id TEXT PRIMARY KEY,
-    smell_id TEXT REFERENCES smells(id),
-    description TEXT,
-    diff_patch TEXT,
-    final_score REAL
-);
-
-CREATE TABLE tradeoffs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    repair_id TEXT REFERENCES repairs(id),
-    positive_attribute TEXT,
-    negative_attribute TEXT,
-    explanation TEXT
-);
-```
-
----
-
-## 9. Reporting
-
-Using `Rich` for CLI output formatting.
-
-### Console Example Output
+Example `prioritize` output:
 
 ```text
 Detected 8 smells in Dockerfile
 
 Priority Ranking:
 =========================================================
-1. Missing Version Pinning (Score: 11.5)
+1. Missing Version Pinning (Score: -11.5)
    Repair: Pin 'python' to '3.12-slim'
-   Security: +4 | Reproducibility: +9 | Maintainability: -2
-   [!] Trade-off: Improves Reproducibility but reduces Maintainability (requires manual updates).
+   Security: +4 | Reproducibility: -9 | Maintainability: -2
+   [!] Trade-off: Improves Security but reduces Reproducibility.
 
-2. Run as root (Score: 10.0)
+2. Run as root (Score: -10.0)
    Repair: Add 'USER appuser'
-   Security: +10 | Performance: 0 | Maintainability: 0
+   Security: -10 | Performance: 0 | Maintainability: 0
    [!] Trade-off: None
 ```
 
----
+Custom weight profiles are plain YAML files:
 
-## 10. Evaluation Methodology
-
-### Dataset Collection
-*   **Strategy:** Crawl 500-1000 open-source Dockerfiles from GitHub using GitHub API, filtering for repositories with >100 stars to ensure realistic project complexities.
-
-### Experimental Procedure
-*   **RQ1 (Impact):** Run Parfum on the dataset. Extract frequency of smells. Map to QA impacts to identify which software attributes are most commonly degraded in the wild.
-*   **RQ2 (Trade-offs & Priorities):** Define 3 developer profiles: "Security First" (Security weight=2.0), "Fast CI/CD" (Performance weight=2.0), "Stable Release" (Reproducibility weight=2.0). Run the prioritization algorithm for each profile and analyze how the top-5 recommended repairs change.
-*   **RQ3 (Practical Outcome):** Select a subset of 20 Dockerfiles. Apply the top 3 repairs. Measure build times (Performance) and image vulnerability counts using Trivy (Security) before and after.
-
----
-
-## 11. Project Structure
-
-```text
-docker-prioritizer/
-│
-├── src/
-│   ├── cli/                   # Typer commands (main.py, commands.py)
-│   ├── domain/                # Pydantic models (models.py)
-│   ├── integrations/
-│   │   └── parfum/            # Subprocess wrapper, parser (client.py)
-│   ├── prioritization/        # Algorithm (engine.py)
-│   ├── tradeoffs/             # Tradeoff detection (analyzer.py)
-│   ├── persistence/           # SQLite DB setup and queries (db.py)
-│   └── reports/               # Pandas export logic, Rich tables (exporter.py)
-│
-├── config/                    
-│   └── smell_impacts.yaml     # Baseline smell->QA mapping
-│
-├── datasets/                  # Scripts to fetch GH Dockerfiles
-│
-├── tests/                     # pytest suite (test_engine.py, test_parser.py)
-│
-├── pyproject.toml             # Dependencies (typer, pydantic, rich, pandas, pyyaml)
-└── README.md
+```yaml
+# security-first-weights.yaml
+weights:
+  Security: 2.0
+  Performance: 1.0
+  Maintainability: 0.5
+  Reproducibility: 1.0
 ```
 
----
+## Development
 
-## 12. Dissertation Alignment
+```bash
+# Run the test suite
+poetry run pytest
 
-This architecture cleanly defines the boundaries between existing work and the novel dissertation contribution.
+# Format code
+poetry run black src tests
+```
 
-### Existing Contribution (Parfum)
-*   **Detection:** Parsing the Dockerfile AST and finding issues.
-*   **Repair:** Generating AST diffs and text patches.
-*   *Role in Architecture:* Isolated entirely in the `integrations/parfum/` layer. It acts strictly as an oracle for smells and patches.
+### Project structure
 
-### Novel Contribution (This Dissertation)
-*   **Trade-off modelling (`domain/`, `config/`):** A formalized model connecting Dockerfile smells to standard Software Architecture Quality Attributes.
-*   **Decision Support (`prioritization/`, `tradeoffs/`):** The WSM algorithm and conflict detection logic that empowers developers to make informed decisions rather than blindly applying patches.
-*   **Repair Ranking (`cli/`, `reports/`):** The practical interface that solves the "Which patch first?" problem.
+```text
+src/
+├── cli/                   # Typer commands (main.py)
+├── domain/                 # Pydantic domain models (models.py)
+├── integrations/
+│   └── parfum/              # Subprocess wrapper and output parser (client.py)
+├── prioritization/          # Weighted Sum Model prioritization engine
+├── tradeoffs/                # Trade-off detection (analyzer.py)
+├── persistence/              # SQLite storage (db.py)
+└── reports/                  # Console/JSON/CSV/Markdown export (exporter.py)
 
-By treating Parfum as a black-box generator of repairs, the dissertation heavily emphasizes the **Software Engineering / Decision Making** contribution (answering RQs 1, 2, and 3), avoiding the trap of simply "building another linter".
+config/
+├── settings.yaml            # Parfum command + database path
+└── smell_impacts.yaml       # Smell → quality-attribute impact mapping
+
+evaluation/                  # Scripts used for the dissertation's empirical evaluation
+tests/                       # pytest suite
+```
+
+## Acknowledgements
+
+Smell detection and automated repair are provided by
+[Parfum](https://github.com/tdurieux/docker-parfum) (Durieux et al.). This project treats
+Parfum as a black-box oracle for smells and patches, and contributes the trade-off-aware
+prioritization model, decision-support reporting, and empirical evaluation on top of it.

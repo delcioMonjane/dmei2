@@ -1,17 +1,20 @@
 [tool.poetry]
 name = "docker-prioritizer"
 version = "0.1.0"
-description = ""
-authors = ["Your Name <you@example.com>"]
+description = "A trade-off-aware CLI for prioritized refactoring of Dockerfiles."
+authors = ["Delcio Cosme Monjane"]
 readme = "README.md"
+packages = [{ include = "src" }]
+
+[tool.poetry.scripts]
+docker-prioritizer = "src.cli.main:app"
 
 [tool.poetry.dependencies]
-# Downgrading to be compatible with older, stable Linux environments
 python = "^3.8"
 typer = {extras = ["all"], version = "^0.12.5"}
-pydantic = "^1.10.0"  # Re-adding the missing pydantic dependency
-pandas = "~1.5.3"
-numpy = "~1.24.3"
+click = "<8.2"  # typer 0.12's Rich help renderer is incompatible with click's newer Parameter API
+pydantic = "^1.10.0"
+pandas = "^2.0"
 pyyaml = "^6.0.3"
 rich = "^13.9.4"
 
@@ -22,3 +25,9 @@ black = "^23.12.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+# Scope collection to this project's suite; evaluation/repositories holds unrelated
+# cloned repositories (with their own test suites and dependencies) used only as
+# corpus data for the empirical evaluation, not part of this codebase.
+testpaths = ["tests"]

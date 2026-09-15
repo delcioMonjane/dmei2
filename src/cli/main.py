@@ -1,99 +1,120 @@
-import sys
 from pathlib import Path
-from rich import print
-from rich.table import Table
+from typing import List, Optional
+
+import typer
 import yaml
+from rich import print
+from rich.console import Console
+from rich.table import Table
+
+from src.domain.models import AnalysisResult, DeveloperPreferences, QualityAttribute, Smell
+from src.integrations.parfum.client import ParfumIntegration
+from src.persistence import db
+from src.prioritization.engine import prioritize_repairs
+from src.reports import exporter
 import uuid
 
-from src.integrations.parfum.client import ParfumIntegration
-from src.prioritization.engine import prioritize_repairs
-from src.domain.models import DeveloperPreferences, QualityAttribute, AnalysisResult, Smell
-from src.reports import exporter
-from src.persistence import db
-from typing import List
+app = typer.Typer(
+    name="docker-prioritizer",
+    help="Detects Dockerfile smells and ranks their repairs by trade-off-aware priority.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 
-def show_help():
-    print("Usage: python src/cli/main.py [COMMAND] [ARGS...]")
-    print("\nCommands:")
-    print("  prioritize [DOCKERFILE_PATH] [CONFIG_PATH]   - Prioritize repairs for a Dockerfile.")
-    print("  analyze    [DOCKERFILE_PATH]                  - Analyze a Dockerfile for smells.")
-    print("  compare    [BEFORE_PATH] [AFTER_PATH]         - Compare two Dockerfiles.")
-    print("  apply      [DOCKERFILE_PATH] [OUTPUT_PATH]    - Auto-repair the Dockerfile.")
+_REPORT_WRITERS = {
+    "json": exporter.to_json,
+    "csv": exporter.to_csv,
+    "md": exporter.to_markdown,
+}
 
-def prioritize_command(args):
-    if len(args) < 1:
-        print("[red]Error: Missing DOCKERFILE_PATH for prioritize command.[/red]")
-        show_help()
-        return
 
-    file_path = Path(args[0])
-    config_path = Path(args[1]) if len(args) > 1 else None
+def _load_preferences(config_path: Optional[Path]) -> DeveloperPreferences:
+    if config_path is None:
+        return DeveloperPreferences()
+    with open(config_path, "r") as f:
+        data = yaml.safe_load(f) or {}
+    weights = data.get("weights", {})
+    return DeveloperPreferences(weights={QualityAttribute(k): v for k, v in weights.items()})
 
+
+def _calculate_total_impact(smells: List[Smell]) -> dict:
+    totals = {qa.value: 0.0 for qa in QualityAttribute}
+    for smell in smells:
+        for impact in smell.impacts:
+            totals[impact.attribute.value] += impact.score
+    return totals
+
+
+@app.command()
+def analyze(
+    dockerfile_path: Path = typer.Argument(..., exists=True, help="Path to the Dockerfile to analyze."),
+):
+    """Run smell detection on a Dockerfile and print the findings."""
     client = ParfumIntegration()
-    smells = client.analyze(file_path)
+    smells = client.analyze(dockerfile_path)
+    print(f"[green]Detected {len(smells)} smell(s) in {dockerfile_path}[/green]")
+    for smell in smells:
+        print(f"- {smell.name} (line {smell.line_number})")
 
-    prefs = DeveloperPreferences()
-    if config_path and config_path.exists():
-        with open(config_path, 'r') as f:
-            data = yaml.safe_load(f)
-            if 'weights' in data:
-                weights = {QualityAttribute(k): v for k, v in data['weights'].items()}
-                prefs = DeveloperPreferences(weights=weights)
 
+@app.command()
+def prioritize(
+    dockerfile_path: Path = typer.Argument(..., exists=True, help="Path to the Dockerfile to analyze."),
+    config: Optional[Path] = typer.Option(
+        None, "--config", "-c", exists=True, help="YAML file with developer quality-attribute weights."
+    ),
+):
+    """Detect smells and rank their repairs by trade-off-aware priority score."""
+    client = ParfumIntegration()
+    smells = client.analyze(dockerfile_path)
+    prefs = _load_preferences(config)
     prioritized_repairs = prioritize_repairs(smells, prefs)
 
     analysis_id = str(uuid.uuid4())
     db.init_db()
-
     result = AnalysisResult(
         analysis_id=analysis_id,
-        dockerfile_path=str(file_path),
+        dockerfile_path=str(dockerfile_path),
         detected_smells=smells,
-        prioritized_repairs=prioritized_repairs
+        prioritized_repairs=prioritized_repairs,
     )
     db.save_analysis(result)
 
-    exporter.print_console_report(prioritized_repairs, str(file_path))
+    exporter.print_console_report(prioritized_repairs, str(dockerfile_path))
     print(f"\n[dim]Analysis saved with ID: {analysis_id}[/dim]")
 
-def analyze_command(args):
-    if len(args) < 1:
-        print("[red]Error: Missing DOCKERFILE_PATH for analyze command.[/red]")
-        show_help()
-        return
 
-    file_path = Path(args[0])
+@app.command()
+def apply(
+    dockerfile_path: Path = typer.Argument(..., exists=True, help="Path to the Dockerfile to repair."),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Where to write the repaired Dockerfile (defaults to overwriting the input)."
+    ),
+):
+    """Apply Parfum's automated repairs to a Dockerfile."""
     client = ParfumIntegration()
-    smells = client.analyze(file_path)
-    print(f"[green]Successfully analyzed {file_path}. Found {len(smells)} smells.[/green]")
-    for smell in smells:
-        print(f"- {smell.name} (Line {smell.line_number})")
+    target = output or dockerfile_path
+    print(f"[bold]Applying automatic repairs to {dockerfile_path}...[/bold]")
+    success, _ = client.repair_and_get_smells(dockerfile_path, target)
 
-def calculate_total_impact(smells: List[Smell]) -> dict:
-    total_impacts = {qa.value: 0 for qa in QualityAttribute}
-    for smell in smells:
-        for impact in smell.impacts:
-            total_impacts[impact.attribute.value] += impact.score
-    return total_impacts
+    if not success:
+        raise typer.Exit(code=1)
+    print(f"[bold green]Repaired Dockerfile saved to {target}[/bold green]")
 
-def compare_command(args):
-    if len(args) < 2:
-        print("[red]Error: Missing BEFORE_PATH and AFTER_PATH for compare command.[/red]")
-        show_help()
-        return
 
-    before_path = Path(args[0])
-    after_path = Path(args[1])
-
+@app.command()
+def compare(
+    before_path: Path = typer.Argument(..., exists=True, help="Dockerfile before refactoring."),
+    after_path: Path = typer.Argument(..., exists=True, help="Dockerfile after refactoring."),
+):
+    """Compare the quality-attribute profile of two Dockerfiles."""
     client = ParfumIntegration()
 
     print(f"[bold]Analyzing 'before' file: {before_path}[/bold]")
-    before_smells = client.analyze(before_path)
-    before_impacts = calculate_total_impact(before_smells)
+    before_impacts = _calculate_total_impact(client.analyze(before_path))
 
     print(f"[bold]Analyzing 'after' file: {after_path}[/bold]")
-    after_smells = client.analyze(after_path)
-    after_impacts = calculate_total_impact(after_smells)
+    after_impacts = _calculate_total_impact(client.analyze(after_path))
 
     table = Table(title="Refactoring Impact Comparison")
     table.add_column("Quality Attribute", style="cyan")
@@ -107,41 +128,33 @@ def compare_command(args):
         improvement = after_score - before_score
         table.add_row(qa.value, str(before_score), str(after_score), f"{improvement:+.0f}")
 
-    print(table)
+    Console().print(table)
 
-def apply_command(args):
-    if len(args) < 1:
-        print("[red]Error: Missing DOCKERFILE_PATH for apply command.[/red]")
-        show_help()
-        return
 
-    file_path = Path(args[0])
-    output_path = Path(args[1]) if len(args) > 1 else None
+@app.command()
+def report(
+    analysis_id: str = typer.Argument(..., help="Analysis ID returned by a previous 'prioritize' run."),
+    format: str = typer.Option("md", "--format", "-f", help="Output format: json, csv, or md."),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Output file path (defaults to <analysis_id>.<format>)."
+    ),
+):
+    """Re-export a previously stored analysis as JSON, CSV, or Markdown."""
+    writer = _REPORT_WRITERS.get(format)
+    if writer is None:
+        print(f"[red]Unsupported format '{format}'. Choose from: {', '.join(_REPORT_WRITERS)}.[/red]")
+        raise typer.Exit(code=1)
 
-    client = ParfumIntegration()
-    print(f"[bold]Applying automatic repairs to {file_path}...[/bold]")
-    success = client.repair(file_path, output_path)
+    db.init_db()
+    analysis = db.get_analysis(analysis_id)
+    if analysis is None:
+        print(f"[red]No analysis found with ID: {analysis_id}[/red]")
+        raise typer.Exit(code=1)
 
-    if success and output_path:
-        print(f"[bold green]Repaired Dockerfile saved to {output_path}[/bold green]")
-    elif success:
-         print(f"[bold green]Repairs applied to {file_path}[/bold green]")
+    output_path = output or Path(f"{analysis_id}.{format}")
+    writer(analysis.prioritized_repairs, str(output_path))
+    print(f"[green]Report written to {output_path}[/green]")
+
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    if not args:
-        show_help()
-    else:
-        command = args[0]
-        command_args = args[1:]
-        if command == "prioritize":
-            prioritize_command(command_args)
-        elif command == "analyze":
-            analyze_command(command_args)
-        elif command == "compare":
-            compare_command(command_args)
-        elif command == "apply":
-            apply_command(command_args)
-        else:
-            print(f"[red]Error: Unknown command '{command}'[/red]")
-            show_help()
+    app()

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import re
 import uuid
@@ -8,21 +9,30 @@ import yaml
 
 from src.domain.models import QualityAttribute, QualityImpact, RepairAction, Smell
 
+# Project root, resolved from this file's location so the CLI works regardless of the
+# caller's current working directory (e.g. when installed and run as `docker-prioritizer`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+DEFAULT_SMELL_IMPACTS_PATH = PROJECT_ROOT / "config" / "smell_impacts.yaml"
+DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.yaml"
+
 
 def get_parfum_executable_path() -> List[str]:
-    """Reads the path from the settings config and returns it as a list."""
-    settings_path = Path("config/settings.yaml")
-    if not settings_path.exists():
-        return ["docker-parfum"]  # Default to global install
+    """Resolves the Parfum command, preferring the PARFUM_EXECUTABLE env var over settings.yaml."""
+    env_override = os.environ.get("PARFUM_EXECUTABLE")
+    if env_override:
+        return env_override.split()
 
-    with open(settings_path, "r") as f:
-        settings = yaml.safe_load(f)
+    if not DEFAULT_SETTINGS_PATH.exists():
+        return ["docker-parfum"]  # Default to a global npm install
+
+    with open(DEFAULT_SETTINGS_PATH, "r") as f:
+        settings = yaml.safe_load(f) or {}
         executable = settings.get("parfum_executable", "docker-parfum")
         return executable.split()
 
 
 class ParfumIntegration:
-    def __init__(self, smell_impact_path: Path = Path("config/smell_impacts.yaml")):
+    def __init__(self, smell_impact_path: Path = DEFAULT_SMELL_IMPACTS_PATH):
         self.parfum_command = get_parfum_executable_path()
         with open(smell_impact_path, "r") as f:
             self.smell_impacts = yaml.safe_load(f)["smells"]

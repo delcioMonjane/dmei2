@@ -36,20 +36,16 @@ RUN wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --
     && apt-get update \
     && apt-get install -y trivy
 
-# 5. Install Python Dependencies
-WORKDIR /app
-COPY pyproject.toml poetry.lock ./
-RUN poetry install --no-root
-
-# 6. Copy the entir
-# 7. Initialize n and clone all submodules INSIDE the image
-RUN git submodule init && git submodule update
-
-# 8. Install Parfum
+# 5. Install Parfum
 RUN npm install -g @tdurieux/docker-parfum
 
-# 9. Final Configuration
-RUN sed -i 's|parfum_executable: .*|parfum_executable: "docker-parfum"|' config/settings.yaml
+# 6. Copy the project and initialize submodules
+WORKDIR /app
+COPY . .
+RUN git submodule init && git submodule update
+
+# 7. Install Python Dependencies (also registers the `docker-prioritizer` entry point)
+RUN poetry install
 
 ENTRYPOINT ["poetry", "run"]
 CMD ["python3", "evaluation/run_evaluation.py"]

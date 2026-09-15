@@ -1,2 +1,10 @@
-parfum_executable: "node C:/Users/delci/Documents/ISEP/MEI/2oAno/DMEI/parfum/docker-parfum/build/cli/index.js"
+# Command used to invoke Parfum (https://github.com/tdurieux/docker-parfum).
+# Assumes Parfum was installed globally via `npm install -g @tdurieux/docker-parfum`,
+# which puts a `docker-parfum` binary on PATH. Override without editing this file by
+# setting the PARFUM_EXECUTABLE environment variable, e.g.:
+#   PARFUM_EXECUTABLE="node /path/to/docker-parfum/build/cli/index.js"
+parfum_executable: "docker-parfum"
+
+# Path to the SQLite database used to persist analyses. Relative paths are resolved
+# against the project root. Override with the DATABASE_PATH environment variable.
 database_path: "docker_prioritizer.db"

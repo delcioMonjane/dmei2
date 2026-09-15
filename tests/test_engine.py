@@ -2,19 +2,21 @@ from src.domain.models import Smell, QualityImpact, QualityAttribute, RepairActi
 from src.prioritization.engine import calculate_score, prioritize_repairs
 
 def test_calculate_score():
+    # Scores follow the same sign convention as config/smell_impacts.yaml: negative
+    # means the smell's presence harms that quality attribute (RUN_AS_ROOT: Security -10).
     smell = Smell(
         smell_id="S-1",
         name="RUN_AS_ROOT",
         line_number=5,
         impacts=[
-            QualityImpact(attribute=QualityAttribute.SECURITY, score=10.0),
+            QualityImpact(attribute=QualityAttribute.SECURITY, score=-10.0),
             QualityImpact(attribute=QualityAttribute.PERFORMANCE, score=0.0)
         ],
         available_repairs=[]
     )
     prefs = DeveloperPreferences(weights={QualityAttribute.SECURITY: 2.0})
     score = calculate_score(smell, prefs)
-    assert score == 20.0
+    assert score == -20.0
 
 def test_prioritize_repairs():
     smell = Smell(
