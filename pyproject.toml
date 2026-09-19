@@ -3,6 +3,7 @@ name = "docker-prioritizer"
 version = "0.1.0"
 description = "A trade-off-aware CLI for prioritized refactoring of Dockerfiles."
 authors = ["Delcio Cosme Monjane"]
+license = "MIT"
 readme = "README.md"
 packages = [{ include = "src" }]
 
