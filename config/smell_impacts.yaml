@@ -1,71 +1,95 @@
 # Comprehensive Smell-to-Quality-Attribute Impact Mapping
-# This file acts as the knowledge base for the prioritization engine.
-# Scores are on a -10 to +10 scale.
-# Negative scores represent "technical debt" or a negative impact on the attribute.
-# Positive scores represent a benefit, usually in the context of a trade-off.
+# Scores are on a -5 to +5 scale, matching the dissertation's literature-derived
+#
+# Convention: a smell's score = -1 x the benefit of the repair action that fixes it,
+# taken directly from the dissertation matrix (verified against "Pin dependency
+# versions", which is used as-is, unflipped, on the trade-off slide: Security -2,
+# Maintainability -1, Reproducibility +5 -- i.e. that IS the repair action's row).
+# Negative = technical debt currently being carried by leaving the smell unfixed.
+# Positive = a benefit currently being enjoyed by NOT fixing it yet (a real trade-off).
+#
+
 
 smells:
-  # --- Security Smells (High Impact) ---
-  "RUN_AS_ROOT": # Covers DL3002
-    Security: -10
-  "INSECURE_URL": # Covers curlUseHttpsUrl, wgetUseHttpsUrl
-    Security: -9
-  "ADD_INSTEAD_OF_COPY": # Covers DL3020
-    Security: -6
-    Reproducibility: -4
-    Maintainability: 2 # Trade-off: ADD can be seen as more convenient but is risky
-  "UNPREDICTABLE_SUDO": # Covers DL3004
-    Security: -7
-    Reproducibility: -7
+  # --- Security Smells ---
+  "RUN_AS_ROOT": # Covers DL3002. Sign-flip of "Run as non-root user"
+    Security: -5
+    Maintainability: -1
 
-  # --- Performance Smells (High Impact) ---
-  "CACHE_NOT_CLEANED": # Covers aptGetInstallThenRemoveAptLists, yumInstallRmVarCacheYum, npmCacheCleanAfterInstall, yarnCacheCleanAfterInstall
-    Performance: -9
-  "NO_INSTALL_RECOMMENDS_MISSING": # Covers aptGetInstallUseNoRec
-    Performance: -7
-    Security: -3 # Installs extra packages, increasing attack surface
-  "PIP_NO_CACHE_DIR_MISSING": # Covers pipUseNoCacheDir
-    Performance: -8
-  "APK_NO_CACHE_MISSING":
-    Performance: -5 # Slower builds if cache is used
-    Security: 7     # Trade-off: Using --no-cache ensures latest (secure) packages
-  "TEMP_DIR_NOT_REMOVED": # Covers rmRecursiveAfterMktempD
-    Performance: -6
-  "ARCHIVE_NOT_REMOVED": # Covers tarSomethingRmTheSomething
-    Performance: -6
-  "GEM_DOCS_NOT_SKIPPED": # Covers gemUpdateNoDocument
+  "INSECURE_URL": # Covers curlUseHttpsUrl, wgetUseHttpsUrl.
+    Security: -4.5
+
+  "ADD_INSTEAD_OF_COPY": # Covers DL3020. Sign-flip of "Replace ADD
+    Performance: 1
+    Maintainability: -4
+    Reproducibility: -2
+
+  "UNPREDICTABLE_SUDO": # Covers DL3004. Sign-flip of "Remove sudo
+    Security: -4
+    Maintainability: -2
+
+  # --- Performance Smells ---
+  "CACHE_NOT_CLEANED": # Covers aptGetInstallThenRemoveAptLists,
+                        # yumInstallRmVarCacheYum, npmCacheCleanAfterInstall,
+                        # yarnCacheCleanAfterInstall. Sign-flip of "Remove package
+                        # manager caches"
+    Performance: -5
+    Maintainability: -1
+
+  "NO_INSTALL_RECOMMENDS_MISSING": # [overs aptGetInstallUseNoRec
     Performance: -4
 
-  # --- Reproducibility Smells (High Impact) ---
-  "IMPRECISE_TAG": # Covers latestTag
-    Reproducibility: -10
-    Security: 3         # Trade-off: Floating tags can automatically pull in security patches
-  "APT_UPDATE_SEPARATE": # Covers aptGetUpdatePrecedesInstall
-    Reproducibility: -8 # Can lead to inconsistent package versions if layers are cached differently
+  "PIP_NO_CACHE_DIR_MISSING": # Covers pipUseNoCacheDir. Same bucket
     Performance: -5
-  "MULTIPLE_INSTALLS": # Covers ruleMoreThanOneInstall
-    Reproducibility: -3
-    Performance: -6 # Creates extra layers
-    Maintainability: -4
+    Maintainability: -1
 
-  # --- Maintainability Smells (Lower Impact) ---
-  "DISCOURAGED_COMMAND": # Covers DL3027 (apt instead of apt-get)
-    Maintainability: -3
-  "GPG_NO_BATCH": # Covers gpgUseBatchFlag
-    Maintainability: -4 # Fails in automated environments
-  "YUM_NO_YES_FLAG": # Covers yumInstallForceYes
-    Maintainability: -4 # Fails in automated environments
-  "APTGET_NO_YES_FLAG": # Covers aptGetInstallUseY
-    Maintainability: -4 # Fails in automated environments
-  "UNNECESSARY_SUDO": # Covers DL3004
-    Maintainability: -5
-    Security: -2
-  "PLATFORM_PINNING": # Covers DL3029
-    Maintainability: -6 # Makes the Dockerfile less portable
-    Reproducibility: 5 # Trade-off: Ensures it only builds for the intended platform
-  "USELESS_LOG_ENTRIES": # Covers DL3046
-    Performance: -1
-    Maintainability: -2
-  "GPG_KEYSERVER_BEST_PRACTICE": # Covers gpgUseHaPools
-    Reproducibility: -3
+  "APK_NO_CACHE_MISSING": #
+    Performance: -2.5
+    Security: 3.5
+
+  "TEMP_DIR_NOT_REMOVED": #
+    Performance: -3
+
+  "ARCHIVE_NOT_REMOVED": #
+    Performance: -3
+
+  "GEM_DOCS_NOT_SKIPPED": #
     Performance: -2
+
+  # --- Reproducibility Smells ---
+  "IMPRECISE_TAG": #  Covers latestTag / unpinned base image
+    Reproducibility: -5
+    Security: 1.5
+
+  "APT_UPDATE_SEPARATE": # Covers aptGetUpdatePrecedesInstall.
+                          # Sign-flip of "Add apt-get update before install"
+    Reproducibility: -4
+
+  "MULTIPLE_INSTALLS": # Covers ruleMoreThanOneInstall. Sign-flip of
+    Performance: -4
+    Maintainability: -2
+
+  # --- Maintainability Smells ---
+  "DISCOURAGED_COMMAND": # Covers DL3027; halved.
+    Maintainability: -1.5
+
+  "GPG_NO_BATCH": # Covers gpgUseBatchFlag; halved.
+    Maintainability: -2
+
+  "YUM_NO_YES_FLAG": # Covers yumInstallForceYes; halved.
+    Maintainability: -2
+
+  "APTGET_NO_YES_FLAG": # Covers aptGetInstallUseY; halved.
+    Maintainability: -2
+
+  "PLATFORM_PINNING": # Covers DL3029. Sign-flip of "Remove explicit
+    Maintainability: -3
+    Reproducibility: -2
+
+  "USELESS_LOG_ENTRIES": # Covers DL3046; halved. No clean
+    Performance: -0.5
+    Maintainability: -1
+
+  "GPG_KEYSERVER_BEST_PRACTICE": #Covers gpgUseHaPools
+    Reproducibility: -1.5
+    Performance: -1

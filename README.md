@@ -1,4 +1,4 @@
- # Docker Prioritizer
+# Docker Prioritizer
 
 A trade-off-aware command-line tool for **prioritized refactoring of Dockerfiles**.
 
@@ -6,8 +6,8 @@ Linters like [Hadolint](https://github.com/hadolint/hadolint) and repair tools l
 [Parfum](https://github.com/tdurieux/docker-parfum) can detect Dockerfile smells and even fix
 them automatically, but they treat every smell as equally important. In practice, fixing one
 issue can improve one quality attribute while quietly harming another — for example, pinning a
-base image version improves **reproducibility** but can reduce **maintainability** by requiring
-manual updates.
+dependency version improves **reproducibility** but can reduce **maintainability** and
+**security** by requiring manual updates and forgoing automatic patches.
 
 Docker Prioritizer sits on top of Parfum's detection engine and adds the missing piece: a
 **prioritization and trade-off model** that ranks proposed repairs according to their impact on
@@ -21,7 +21,7 @@ recommendation. This project is the prototype implementation built for the MSc d
 - **Smell detection** via [Parfum](https://github.com/tdurieux/docker-parfum), used as an
   external detection/repair engine.
 - **Trade-off-aware prioritization** using a configurable Weighted Sum Model over four quality
-  attributes.
+  attributes, driven by a literature-derived impact matrix.
 - **Trade-off explanations** — every recommendation states which attributes it improves and
   which it may harm.
 - **Automated repair** via Parfum's repair engine.
@@ -58,11 +58,16 @@ recommendation. This project is the prototype implementation built for the MSc d
 +-------------------------------------------------------------+
 ```
 
-Each detected smell carries a set of pre-calibrated impact scores on a **-10 (harmful) to +10
-(beneficial)** scale per quality attribute, defined in [`config/smell_impacts.yaml`](config/smell_impacts.yaml).
-The prioritization engine combines those scores with developer-defined weights into a single
-priority score per repair; the trade-off analyzer flags any smell whose impacts point in
-opposite directions across attributes.
+Each detected smell carries a set of impact scores on a **-5 (harmful) to +5 (beneficial)**
+scale per quality attribute, defined in
+[`config/smell_impacts.yaml`](config/smell_impacts.yaml). These scores mirror the
+literature-derived impact matrix reported in the accompanying dissertation and paper: most
+entries come directly from that matrix (sign-flipped, since the matrix scores the *repair*
+action while this file scores the *smell* being left unfixed); a few cover smell types outside
+the matrix's original ten-action scope and are flagged accordingly in the file's comments as
+provisional. The prioritization engine combines those scores with developer-defined weights
+into a single priority score per repair; the trade-off analyzer flags any smell whose impacts
+point in opposite directions across attributes.
 
 ## Prerequisites
 
@@ -117,8 +122,8 @@ for CI, containers, or a local Parfum build that isn't on `PATH`:
 | `DATABASE_PATH`       | `database_path`             | `DATABASE_PATH="/tmp/docker-prioritizer.db"` |
 
 Smell-to-quality-attribute impact scores are defined in
-[`config/smell_impacts.yaml`](config/smell_impacts.yaml) and can be recalibrated without
-touching code.
+[`config/smell_impacts.yaml`](config/smell_impacts.yaml) on a **-5 to +5** scale and can be
+recalibrated without touching code.
 
 ## Usage
 
@@ -142,23 +147,37 @@ docker-prioritizer compare Dockerfile Dockerfile.repaired
 docker-prioritizer report <ANALYSIS_ID> --format md --output report.md
 ```
 
-Example `prioritize` output:
+Example `prioritize` output, on an equal-weight profile (verified, real output — not
+illustrative):
 
 ```text
-Detected 8 smells in Dockerfile
+Detected 5 smells in Dockerfile.example
 
 Priority Ranking:
 =========================================================
-1. Missing Version Pinning (Score: -11.5)
-   Repair: Pin 'python' to '3.12-slim'
-   Security: +4 | Reproducibility: -9 | Maintainability: -2
-   [!] Trade-off: Improves Security but reduces Reproducibility.
+1. DL3002 — running as root (Score: -6.0)
+   Security: -5 | Performance: 0 | Maintainability: -1 | Reproducibility: 0
+   [!] Trade-off: None
 
-2. Run as root (Score: -10.0)
-   Repair: Add 'USER appuser'
-   Security: -10 | Performance: 0 | Maintainability: 0
+2. pipUseNoCacheDir — missing --no-cache-dir on pip install (Score: -6.0)
+   Security: 0 | Performance: -5 | Maintainability: -1 | Reproducibility: 0
+   [!] Trade-off: None
+
+3. aptGetInstallThenRemoveAptLists — apt cache not cleaned (Score: -6.0)
+   Security: 0 | Performance: -5 | Maintainability: -1 | Reproducibility: 0
+   [!] Trade-off: None
+
+4. DL3020 — ADD instead of COPY (Score: -5.0)
+   Security: 0 | Performance: +1 | Maintainability: -4 | Reproducibility: -2
+   [!] Trade-off: Improves Performance but reduces Maintainability and Reproducibility.
+
+5. aptGetInstallUseNoRec — missing --no-install-recommends (Score: -4.0)
+   Security: 0 | Performance: -4 | Maintainability: 0 | Reproducibility: 0
    [!] Trade-off: None
 ```
+
+Note that #4 has no Security component at all — the literature-derived matrix scores the
+ADD-vs-COPY trade-off purely on Performance, Maintainability and Reproducibility, not Security.
 
 Custom weight profiles are plain YAML files:
 
@@ -196,7 +215,7 @@ src/
 
 config/
 ├── settings.yaml            # Parfum command + database path
-└── smell_impacts.yaml       # Smell → quality-attribute impact mapping
+└── smell_impacts.yaml       # Smell → quality-attribute impact mapping (-5 to +5 scale)
 
 evaluation/                  # Scripts used for the dissertation's empirical evaluation
 tests/                       # pytest suite

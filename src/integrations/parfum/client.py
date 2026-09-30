@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import re
 import uuid
@@ -16,19 +17,29 @@ DEFAULT_SMELL_IMPACTS_PATH = PROJECT_ROOT / "config" / "smell_impacts.yaml"
 DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.yaml"
 
 
+def _resolve_executable(parts: List[str]) -> List[str]:
+    # On Windows, npm-installed CLIs are exposed as .cmd/.bat shims, which
+    # subprocess.run(..., shell=False) can't locate via bare name (no PATHEXT
+    # resolution). shutil.which() applies PATHEXT and gives us the real path.
+    resolved = shutil.which(parts[0])
+    if resolved:
+        parts[0] = resolved
+    return parts
+
+
 def get_parfum_executable_path() -> List[str]:
     """Resolves the Parfum command, preferring the PARFUM_EXECUTABLE env var over settings.yaml."""
     env_override = os.environ.get("PARFUM_EXECUTABLE")
     if env_override:
-        return env_override.split()
+        return _resolve_executable(env_override.split())
 
     if not DEFAULT_SETTINGS_PATH.exists():
-        return ["docker-parfum"]  # Default to a global npm install
+        return _resolve_executable(["docker-parfum"])  # Default to a global npm install
 
     with open(DEFAULT_SETTINGS_PATH, "r") as f:
         settings = yaml.safe_load(f) or {}
         executable = settings.get("parfum_executable", "docker-parfum")
-        return executable.split()
+        return _resolve_executable(executable.split())
 
 
 class ParfumIntegration:
