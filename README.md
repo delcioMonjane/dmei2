@@ -134,7 +134,8 @@ docker-prioritizer analyze Dockerfile
 # Detect smells and rank their repairs by priority (default: equal weights)
 docker-prioritizer prioritize Dockerfile
 
-# Rank using custom developer preferences (see security-first-weights.yaml for the format)
+# Rank using custom developer preferences (see security-first-weights.yaml or
+# maintainability-first-weights.yaml for the format)
 docker-prioritizer prioritize Dockerfile --config security-first-weights.yaml
 
 # Apply Parfum's automated repairs
@@ -189,6 +190,20 @@ weights:
   Maintainability: 0.5
   Reproducibility: 1.0
 ```
+
+```yaml
+# maintainability-first-weights.yaml
+weights:
+  Security: 1.0
+  Performance: 0.5
+  Maintainability: 2.0
+  Reproducibility: 1.0
+```
+
+The latter is the exact profile used in the "Sensitivity to Developer Weight Profiles"
+analysis reported in the paper (Section IV-D) — see
+[`evaluation/04_weight_sensitivity.py`](evaluation/04_weight_sensitivity.py) to reproduce
+Table VI from it.
 
 ## Development
 
