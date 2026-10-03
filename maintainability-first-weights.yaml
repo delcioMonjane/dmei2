@@ -2,7 +2,7 @@
 # Here, Security is weighted twice as much as other attributes.
 # Maintainability is considered less important.
 weights:
-  Security: 2.0
-  Performance: 1.0
-  Maintainability: 0.5
+  Security: 1.0
+  Performance: 0.5
+  Maintainability: 2
   Reproducibility: 1.0
